@@ -18,7 +18,7 @@ object Main extends App with RequestTimeout {
   val host   = config.getString("http.host") // 設定からホスト名とポートを取得
   val port   = config.getInt("http.port")
 
-  val log = LoggerFactory.getLogger("hoge")
+  val log = LoggerFactory.getLogger(this.getClass)
 
   ActorSystem[Done](
     Behaviors.setup { ctx =>
