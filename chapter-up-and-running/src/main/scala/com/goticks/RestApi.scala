@@ -20,7 +20,7 @@ object RestApi {
 }
 
 class RestApi(
-    val system: ActorSystem[_],
+    val system: ActorSystem[Nothing],
     val boxOffice: ActorRef[BoxOffice.Command]
 )(implicit
     val requestTimeout: Timeout

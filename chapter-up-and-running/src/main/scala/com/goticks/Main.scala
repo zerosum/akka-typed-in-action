@@ -9,7 +9,7 @@ import akka.util.Timeout
 import com.typesafe.config.{Config, ConfigFactory}
 import org.slf4j.LoggerFactory
 
-import scala.concurrent.{ExecutionContextExecutor, Future}
+import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success}
 
 object Main extends App with RequestTimeout {
@@ -23,7 +23,7 @@ object Main extends App with RequestTimeout {
   ActorSystem[Done](
     Behaviors.setup { ctx =>
       implicit val system: ActorSystem[Nothing] = ctx.system
-      implicit val ec: ExecutionContextExecutor = system.executionContext // bindAndHandleは暗黙のExecutionContextが必要
+      implicit val ec: ExecutionContext         = system.executionContext // bindAndHandleは暗黙のExecutionContextが必要
 
       val api = RestApi(ctx, requestTimeout(config)).routes // the RestApi provides a Route
 
