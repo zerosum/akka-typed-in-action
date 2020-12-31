@@ -14,7 +14,7 @@ class SendingActorTest extends ScalaTestWithActorTestKit with AnyWordSpecLike {
       import SendingActor._
 
       val probe        = testKit.createTestProbe[SortedEvents]()
-      val sendingActor = testKit.spawn(SendingActor())
+      val sendingActor = testKit.spawn(SendingActor(probe.ref))
 
       val size         = 1000
       val maxInclusive = 100000
@@ -24,7 +24,7 @@ class SendingActorTest extends ScalaTestWithActorTestKit with AnyWordSpecLike {
       }.toVector
 
       val unsorted   = randomEvents()
-      val sortEvents = SortEvents(unsorted, probe.ref)
+      val sortEvents = SortEvents(unsorted)
       sendingActor ! sortEvents
 
       val events = probe.receiveMessage().sorted
@@ -37,13 +37,13 @@ class SendingActorTest extends ScalaTestWithActorTestKit with AnyWordSpecLike {
 object SendingActor {
 
   sealed trait Command
-  case class Event(id: Long)                                                       extends Command
-  case class SortEvents(unsorted: Vector[Event], receiver: ActorRef[SortedEvents]) extends Command
-  case class SortedEvents(sorted: Vector[Event])                                   extends Command
+  case class Event(id: Long)                     extends Command
+  case class SortEvents(unsorted: Vector[Event]) extends Command
+  case class SortedEvents(sorted: Vector[Event]) extends Command
 
-  def apply(): Behavior[SendingActor.Command] = Behaviors.receive { (ctx, msg) =>
+  def apply(receiver: ActorRef[SortedEvents]): Behavior[SendingActor.Command] = Behaviors.receive { (ctx, msg) =>
     msg match {
-      case SortEvents(unsorted, receiver) =>
+      case SortEvents(unsorted) =>
         receiver ! SortedEvents(unsorted.sortBy(_.id))
         Behaviors.same
     }
