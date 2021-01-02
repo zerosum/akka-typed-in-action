@@ -40,7 +40,7 @@ object TicketSeller {
 
         case Cancel(sender) =>
           sender ! Some(BoxOffice.Event(event, tickets.size))
-          Behaviors.same
+          Behaviors.stopped
       }
     }
   }
