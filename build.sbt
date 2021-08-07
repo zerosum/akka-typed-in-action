@@ -8,4 +8,6 @@ lazy val test = project.in(file("chapter-testdriven"))
 
 lazy val up = project.in(file("chapter-up-and-running"))
 
-parallelExecution in Test := false
+lazy val fsm = project.in(file("chapter-state"))
+
+Test / parallelExecution := false
