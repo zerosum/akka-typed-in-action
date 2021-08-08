@@ -1,97 +1,150 @@
 package aia.state
 
 import akka.actor.typed.{ActorRef, Behavior}
-import akka.actor.typed.scaladsl.Behaviors
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 
 object Inventory {
 
+  sealed trait Event
+  case class BookRequest(replyTo: ActorRef[Response]) extends Event
+  case object PendingRequest                          extends Event
+  case class BookSupply(nrBooks: Int)                 extends Event
+  case object BookSupplySoldOut                       extends Event
+  case object Done                                    extends Event
+
   sealed trait Response
-  case object PublisherRequest                         extends Response
   case class BookReply(reserveId: Either[String, Int]) extends Response
 
-  sealed trait Event
-  case class BookRequest(target: ActorRef[Response]) extends Event
-  case object PendingRequest                         extends Event
-  case class BookSupply(nrBooks: Int)                extends Event
-  case object BookSupplySoldOut                      extends Event
-  case object Done                                   extends Event
-
   case class StateData(
-      self: ActorRef[Event],
-      publisher: ActorRef[Response],
+      publisher: ActorRef[Publisher.Event],
       reserveId: Int,
       nrBooksInStore: Int,
       pendingRequests: Seq[BookRequest]
   )
 
-  def apply(): Behavior[Event] = {
-    waitForRequests(StateData(???, ???, 0, 0, Nil))
+  def apply(publisher: ActorRef[Publisher.Event]): Behavior[Event] = {
+    waitForRequests(StateData(publisher, 0, 0, Nil))
   }
 
-  def waitForRequests(state: StateData): Behavior[Event] = {
+  private[this] type StateTransition = PartialFunction[Event, Behavior[Event]]
+
+  private def waitForRequests(state: StateData): Behavior[Event] = Behaviors.setup { ctx =>
+    // entry action
     if (state.pendingRequests.nonEmpty) {
-      state.self ! PendingRequest
+      ctx.self ! PendingRequest
     }
 
-    Behaviors.receiveMessage[Event] {
-      case request: BookRequest =>
-        val newStateData = state.copy(pendingRequests = state.pendingRequests :+ request)
-        if (newStateData.nrBooksInStore > 0) {
-          processRequest(newStateData)
+    // transition conditions
+    Behaviors.receiveMessage[Event] { message =>
+      def transitionByCondOfState(_state: StateData): Behavior[Event] = {
+        if (_state.nrBooksInStore > 0) {
+          processRequest(_state)
         } else {
-          waitForPublisher(newStateData)
+          waitForPublisher(_state)
         }
+      }
 
-      case PendingRequest =>
-        if (state.pendingRequests.isEmpty) {
+      val transition: StateTransition = {
+        case request: BookRequest =>
+          val newStateData = state.copy(pendingRequests = state.pendingRequests :+ request)
+          transitionByCondOfState(newStateData)
+        case PendingRequest if state.pendingRequests.nonEmpty =>
+          transitionByCondOfState(state)
+        case PendingRequest =>
           Behaviors.same
-        } else if (state.nrBooksInStore > 0) {
-          processRequest(state)
-        } else {
-          waitForPublisher(state)
-        }
+      }
+
+      transition
+        .orElse(unhandledEventPF("waitForRequests", ctx, state))
+        .apply(message)
     }
   }
 
-  def waitForPublisher(data: StateData): Behavior[Event] = {
-    data.publisher ! PublisherRequest
+  private def waitForPublisher(state: StateData): Behavior[Event] = Behaviors.setup { ctx =>
+    // entry action
+    state.publisher ! Publisher.Request(ctx.self)
 
-    Behaviors.receiveMessage[Event] {
-      case supply: BookSupply =>
-        processRequest(data.copy(nrBooksInStore = supply.nrBooks))
+    // transition conditions
+    Behaviors.receiveMessage[Event] { message =>
+      val transition: StateTransition = {
+        case supply: BookSupply => processRequest(state.copy(nrBooksInStore = supply.nrBooks))
+        case BookSupplySoldOut  => processSoldOut(state)
+      }
 
-      case BookSupplySoldOut =>
-        processSoldOut(data)
+      transition
+        .orElse(unhandledBookRequestPF(waitForPublisher, state))
+        .orElse(unhandledEventPF("waitForPublisher", ctx, state))
+        .apply(message)
     }
   }
 
-  def processRequest(data: StateData): Behavior[Event] = {
-    val request      = data.pendingRequests.head
-    val newReserveId = data.reserveId + 1
-    request.target ! BookReply(Right(newReserveId))
+  private def processRequest(state: StateData): Behavior[Event] = Behaviors.setup { ctx =>
+    // entry action
+    val request      = state.pendingRequests.head
+    val newReserveId = state.reserveId + 1
+    request.replyTo ! BookReply(Right(newReserveId))
+    ctx.self ! Done
 
-    Behaviors.receiveMessage[Event] { case Done =>
-      waitForRequests(
-        data.copy(
-          reserveId = newReserveId,
-          nrBooksInStore = data.nrBooksInStore - 1,
-          pendingRequests = data.pendingRequests.tail
+    // transition conditions
+    Behaviors.receiveMessage[Event] { message =>
+      val transition: StateTransition = { case Done =>
+        waitForRequests(
+          state.copy(
+            reserveId = newReserveId,
+            nrBooksInStore = state.nrBooksInStore - 1,
+            pendingRequests = state.pendingRequests.tail
+          )
         )
-      )
+      }
+
+      transition
+        .orElse(unhandledBookRequestPF(processRequest, state))
+        .orElse(unhandledEventPF("processRequest", ctx, state))
+        .apply(message)
     }
   }
 
-  def soldOut(data: StateData): Behavior[Event] = Behaviors.receiveMessage[Event] { case request: BookRequest =>
-    processSoldOut(StateData(data.self, data.publisher, data.reserveId, 0, Seq(request)))
+  private def soldOut(state: StateData): Behavior[Event] = {
+    // transition conditions
+    Behaviors.receive[Event] { (ctx, message) =>
+      val transition: StateTransition = { case request: BookRequest =>
+        processSoldOut(StateData(state.publisher, state.reserveId, 0, Seq(request)))
+      }
+
+      transition
+        .orElse(unhandledEventPF("soldOut", ctx, state))
+        .apply(message)
+    }
   }
 
-  def processSoldOut(data: StateData): Behavior[Event] = {
-    data.pendingRequests.foreach { request =>
-      request.target ! BookReply(Left("SoldOut"))
-    }
+  private def processSoldOut(state: StateData): Behavior[Event] = Behaviors.setup { ctx =>
+    // entry action
+    state.pendingRequests.foreach { _.replyTo ! BookReply(Left("SoldOut")) }
+    ctx.self ! Done
 
-    Behaviors.receiveMessage[Event] { case Done =>
-      soldOut(StateData(data.self, data.publisher, data.reserveId, 0, Nil))
+    // transition conditions
+    Behaviors.receiveMessage[Event] { message =>
+      val transition: StateTransition = { case Done =>
+        soldOut(StateData(state.publisher, state.reserveId, 0, Nil))
+      }
+
+      transition
+        .orElse(unhandledBookRequestPF(processSoldOut, state))
+        .orElse(unhandledEventPF("processSoldOut", ctx, state))
+        .apply(message)
     }
+  }
+
+  // unhandled fallback
+  private[this] def unhandledEventPF(stateName: String, ctx: ActorContext[Event], state: StateData): StateTransition = {
+    case event: Event =>
+      ctx.log.warn("received unhandled request {} in state {}/{}", event, stateName, state)
+      Behaviors.same
+  }
+
+  private[this] def unhandledBookRequestPF(f: StateData => Behavior[Event], state: StateData): StateTransition = {
+    case request: BookRequest =>
+      val newStateData = state.copy(pendingRequests = state.pendingRequests :+ request)
+      f(newStateData)
   }
 }
